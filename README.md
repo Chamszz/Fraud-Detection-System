@@ -113,12 +113,12 @@ Expected columns: `transaction_id`, `amount`, `timestamp`, `merchant_category`, 
 
 ### 4. Train the Model
 ```bash
-python src/model.py --train --user your_user_id
+python notebooks/train.py
 ```
 
 ### 5. Test a Transaction
 ```bash
-python src/risk_scorer.py --amount 4500 --user your_user_id
+python run_tests.py
 ```
 
 Output:
