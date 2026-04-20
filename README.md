@@ -56,7 +56,7 @@ User Transaction History (Dataset)
 
 ---
 
-## Tech Stack
+## 🛠️ Tech Stack
 
 | Component | Technology |
 |-----------|-----------|
@@ -69,7 +69,7 @@ User Transaction History (Dataset)
 
 ---
 
-## Project Structure
+## 📁 Project Structure
 
 ```
 Fraud-Detection-System/
@@ -94,7 +94,7 @@ Fraud-Detection-System/
 
 ---
 
-## Getting Started
+## 🚀 Getting Started
 
 ### 1. Clone the Repository
 ```bash
@@ -113,12 +113,12 @@ Expected columns: `transaction_id`, `amount`, `timestamp`, `merchant_category`, 
 
 ### 4. Train the Model
 ```bash
-python notebooks/train.py
+python src/model.py --train --user your_user_id
 ```
 
 ### 5. Test a Transaction
 ```bash
-python run_tests.py
+python src/risk_scorer.py --amount 4500 --user your_user_id
 ```
 
 Output:
@@ -133,7 +133,7 @@ Output:
 
 ---
 
-## Model Performance
+## 📊 Model Performance
 
 | Metric | Score |
 |--------|-------|
@@ -147,7 +147,7 @@ Output:
 
 ---
 
-## Adaptive Learning Loop
+## 🔄 Adaptive Learning Loop
 
 The system's core innovation is its **feedback-driven retraining**:
 
@@ -157,7 +157,7 @@ The system's core innovation is its **feedback-driven retraining**:
 
 ---
 
-## Applied Data Science Concepts Used
+## 📖 Applied Data Science Concepts Used
 
 - Class imbalance handling (SMOTE / class weighting)
 - Feature importance analysis via Random Forest
@@ -168,13 +168,13 @@ The system's core innovation is its **feedback-driven retraining**:
 
 ---
 
-## Author
+## 👤 Author
 
 **Chamszz** — [github.com/Chamszz](https://github.com/Chamszz)  
 Applied Data Science Project
 
 ---
 
-## License
+## 📄 License
 
 This project is for educational and research purposes.
