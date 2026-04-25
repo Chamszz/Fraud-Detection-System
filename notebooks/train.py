@@ -37,11 +37,19 @@ for _, r in d.iterrows():
 X = np.array(f_list)
 y = np.array(labels)
 
-m = RandomForestClassifier(n_estimators=100, random_state=42, class_weight='balanced')
+m = RandomForestClassifier(
+    n_estimators=250,
+    max_depth=12,
+    min_samples_split=5,
+    min_samples_leaf=3,
+    random_state=42,
+    class_weight='balanced_subsample',
+    n_jobs=-1
+)
 m.fit(X, y)
 
 os.makedirs('models', exist_ok=True)
 with open(modelPath, 'wb') as f:
     pickle.dump(m, f)
 
-print("Model trained with RF")
+print("Model trained with Random Forest")

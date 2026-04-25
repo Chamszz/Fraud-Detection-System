@@ -10,7 +10,7 @@ import numpy as np
 from config import dataPath, modelPath
 
 def retrainModel():
-    d = pd.read_csv('../' + dataPath)
+    d = pd.read_csv(dataPath)
 
     if 'trans_date_trans_time' in d.columns:
         d['datetime'] = pd.to_datetime(d['trans_date_trans_time'])
@@ -60,11 +60,19 @@ def retrainModel():
     X = np.array(f_list)
     y = np.array(labels)
 
-    m = RandomForestClassifier(n_estimators=100, random_state=42, class_weight='balanced')
+    m = RandomForestClassifier(
+        n_estimators=250,
+        max_depth=12,
+        min_samples_split=5,
+        min_samples_leaf=3,
+        random_state=42,
+        class_weight='balanced_subsample',
+        n_jobs=-1
+    )
     m.fit(X, y)
 
-    os.makedirs('models', exist_ok=True)
-    with open('../' + modelPath, 'wb') as f:
+    os.makedirs(os.path.join(os.path.dirname(modelPath)), exist_ok=True)
+    with open(modelPath, 'wb') as f:
         pickle.dump(m, f)
     
     return True
