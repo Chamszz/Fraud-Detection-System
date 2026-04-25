@@ -12,11 +12,15 @@ dbUserProfiles = 'user_profiles.db'
 dbFeedback = 'transaction_feedback.db'
 dbHistory = 'transaction_history.db'
 
+import os
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # model and data
-modelPath = 'models/model.pkl'
-dataPath = 'data/creditcard.csv'
+modelPath = os.path.join(BASE_DIR, 'models', 'model.pkl')
+dataPath = os.path.join(BASE_DIR, 'data', 'creditcard.csv')
 
 # backend url
-backendUrl = "http://localhost:8000"
+backendUrl = 'http://localhost:8000'
 
 # this works

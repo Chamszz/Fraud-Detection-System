@@ -20,7 +20,7 @@ app = FastAPI()
 initFeedbackDb()
 initHistoryDb()
 
-model_file = '../' + modelPath
+model_file = modelPath
 with open(model_file, 'rb') as f:
     model = pickle.load(f)
 
@@ -146,20 +146,27 @@ async def process(txn: Txn):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Model error: {str(e)}")
-    
+
+@app.post("/transaction/{tid}/resolve")
+async def resolve(tid: str, act: Act, background_tasks: BackgroundTasks):
+    if tid not in pending:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+
     p = pending[tid]
     t = p['txn']
-    
-    status_str = "APPROVED" if act.action == "approve" else "REJECTED"
+    if act.action == "approve":
+        status_str = "APPROVED"
+    else:
+        status_str = "REJECTED"
+
     pending[tid]['status'] = status_str
-    
+
     logFeedback(t['cc_num'], t['amt'], t['hour'], t['minute'], t['second'], act.action)
     logTransaction(tid, t['cc_num'], t['amt'], t['hour'], t['minute'], t['second'], p['risk'], status_str)
-    
-    # Run model retraining in the background - this returns immediately
+
     background_tasks.add_task(retrainModel)
     background_tasks.add_task(reloadModelInBackground)
-    
+
     return {
         "transaction_id": tid,
         "status": status_str,
