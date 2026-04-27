@@ -1,0 +1,562 @@
+Project Overview
+================
+This project is a credit card fraud detection system built around a supervised machine learning model and a FastAPI backend. The dataset is stored in `data/creditcard.csv`, and the fraud label is `is_fraud`.
+
+Key components:
+- `config.py`: global settings, file paths, and scoring constants
+- `utils/features.py`: feature extraction for each transaction
+- `export_user_data.py`: report generation from user transactions
+- `backend/main.py`: API endpoints, model scoring, threshold decision, and transaction handling
+- `backend/retrain.py`: model training and retraining logic
+- `frontend/app.py`: Streamlit user interface
+- `user_profiles.db`: SQLite profile database used to compute user baseline features
+
+
+1. Data and Labels
+------------------
+Input data file:
+- `data/creditcard.csv`
+
+The dataset columns include:
+- `trans_date_trans_time`
+- `cc_num`
+- `merchant`
+- `category`
+- `amt`
+- `first`
+- `last`
+- `gender`
+- `street`
+- `city`
+- `state`
+- `zip`
+- `lat`
+- `long`
+- `city_pop`
+- `job`
+- `dob`
+- `trans_num`
+- `unix_time`
+- `merch_lat`
+- `merch_long`
+- `is_fraud`
+
+The label used by the model is:
+- `is_fraud`
+  - `0` = non-fraud
+  - `1` = fraud
+
+This label is read in `backend/retrain.py` when the model is trained.
+
+
+2. Feature Extraction
+---------------------
+File: `utils/features.py`
+
+This module transforms a transaction into numeric features used by the model.
+
+Relevant code:
+```python
+# utils/features.py
+feat = process(txn)
+```
+
+Core logic:
+- `cc = txn['cc_num']`
+- `amt = txn['amt']`
+- compute transaction time:
+  - `t_val = hour + minute / 60 + second / 3600`
+- load user baseline from `user_profiles.db` using `get_data(cc_num)`
+- if baseline exists:
+  - `avg_amt = base['avg_amount']`
+  - `freq_t = base['frequent_time']`
+- if no baseline:
+  - use current amount/time as baseline
+
+Derived features returned:
+- `a_dev`: absolute amount deviation as fraction of average amount
+- `t_dev`: normalized time deviation relative to user’s frequent time
+- `a_log`: `log(amt + 1)`
+- `t_val`: decimal time value of transaction
+
+This means the model is not using raw text fields directly, but rather derived numeric features representing
+how unusual the transaction amount and time are for that card.
+
+
+3. Model Training and Retraining
+--------------------------------
+File: `backend/retrain.py`
+
+Training uses a Random Forest classifier.
+
+Relevant code:
+```python
+m = RandomForestClassifier(
+    n_estimators=250,
+    max_depth=12,
+    min_samples_split=5,
+    min_samples_leaf=3,
+    random_state=42,
+    class_weight='balanced_subsample',
+    n_jobs=-1
+)
+m.fit(X, y)
+```
+
+Training flow:
+- Read `data/creditcard.csv`
+- parse transaction time into `hour`, `minute`, `second`
+- load additional feedback data from `transaction_feedback.db`
+- append approved feedback transactions with `is_fraud=0`
+- extract features for every transaction using `extractFeatures`
+- create `X` feature matrix and `y` label array
+- fit the Random Forest model
+- save model to `backend/models/model.pkl`
+
+Retraining occurs when a pending transaction is manually approved or rejected.
+When this happens, `backend/main.py` calls:
+- `retrainModel()`
+- `reloadModelInBackground()`
+
+So the model is updated over time when user feedback is logged.
+
+
+4. Thresholds and Risk Scoring
+-----------------------------
+File: `config.py`
+
+Threshold constants:
+- `riskThreshold = 80` — final risk score threshold for approval vs pending
+- `riskAmt3x = 95` — minimum risk for transactions 3× above average
+- `risk_amount_2x = 90` — minimum risk for transactions 2× above average
+- `riskAmtScale = 25` — scale factor for moderate amount increases
+- `riskTimeScale = 2` — scale factor for unusual transaction times
+- `riskMlMultiplier = 200` — not used directly in current scoring logic
+- `riskyAmtRatio = 2.0` — business rule ratio for risky amounts
+
+These values are fixed business-rule parameters, not learned by the Random Forest. They are chosen to define how strictly the system reacts to large deviations from normal spending behavior.
+
+Why these specific values?
+- `riskThreshold = 80` means the system treats anything below 80 as acceptable risk and approves it.
+- `riskAmt3x = 95` and `risk_amount_2x = 90` force very high risk when a transaction is far above the user’s average amount.
+- `riskAmtScale = 25` adds extra risk for amounts above average but below the 2× threshold.
+- `riskTimeScale = 2` adds risk when a transaction time is unusual for the cardholder.
+
+These thresholds are applied after the model produces a fraud probability. The model is responsible for scoring how suspicious the transaction is from the learned data; the threshold constants are used to adjust the score with domain-specific fraud rules.
+
+File: `backend/main.py`
+
+Relevant logic:
+```python
+feat = extractFeatures(txn.dict())
+fraud_prob = model.predict_proba([feat])[0][1]
+risk, reason = calc_risk(fraud_prob, txn.amt, info)
+```
+
+This shows the model output is a probability, not a final pass/fail label.
+
+In `calc_risk(...)`:
+```python
+def calc_risk(fraud_prob, amt, baseline):
+    risk = fraud_prob * 100
+    reason = ""
+    if baseline:
+        ratio = amt / baseline['avg_amount'] if baseline['avg_amount'] > 0 else 1.0
+        t_val = baseline.get('frequent_time', 0)
+        t_raw = abs((0 - t_val))
+        t_diff = min(t_raw, 24 - t_raw)
+        if ratio >= 3:
+            risk = max(risk, riskAmt3x)
+            reason += "Amount 3x+ above average. "
+        elif ratio >= 2:
+            risk = max(risk, risk_amount_2x)
+            reason += "Amount 2x+ above average. "
+        elif ratio > 1:
+            risk = min(100, risk + int((ratio - 1.0) * riskAmtScale))
+        risk = min(100, risk + int(t_diff * riskTimeScale))
+        if t_diff > 1.0:
+            reason += "Unusual transaction time. "
+    return int(risk), reason.strip() if reason else "Flagged by system"
+```
+
+How fraud detection works in practice:
+- the Random Forest model learns fraud probability from historical transactions and derived features
+- this probability is scaled to a 0-100 risk score
+- the code then increases that score for strong anomalies: very large amounts or strange times
+- this combined risk score is the actual number compared against `riskThreshold`
+
+Exactly where the threshold is used:
+```python
+if risk < riskThreshold:
+    status = "APPROVED"
+else:
+    status = "PENDING"
+```
+
+The model itself does not receive the threshold directly. Instead, the model produces `fraud_prob`, and the threshold is applied in `backend/main.py` after the score is adjusted.
+
+So the fraud transaction decision path is:
+1. model predicts fraud probability from features
+2. `calc_risk(...)` converts that probability into a risk score
+3. business rules adjust risk using `config.py` values
+4. final risk is compared to `riskThreshold`
+5. transaction is approved or held for review
+
+This means the threshold values are part of the decision engine, not part of the learned model weights.
+
+
+5. API and Transaction Flow
+---------------------------
+File: `backend/main.py`
+
+Endpoints:
+- `GET /validate/{cc_num}`
+  - checks card validity
+  - returns card holder profile fields
+- `POST /transaction`
+  - validates card existence
+  - extracts features
+  - predicts fraud probability
+  - computes risk score
+  - decides APPROVED vs PENDING
+  - logs transaction to history
+- `POST /transaction/{tid}/resolve`
+  - approve or reject a pending transaction
+  - logs feedback
+  - triggers retraining and model reload
+- `GET /history/{cc_num}`
+  - returns recent transaction history and today’s spending
+
+Example decision flow in `/transaction`:
+1. Validate card exists in `user_profiles.db`
+2. Build feature vector from transaction data
+3. Run `model.predict_proba([feat])`
+4. Convert probability into `risk`
+5. Apply baseline adjustments and time penalties
+6. Compare to `riskThreshold`
+7. Return `APPROVED` or `PENDING`
+
+If `PENDING`, the transaction is stored in `pending` memory until resolved.
+
+
+6. User Profile Baseline Data
+-----------------------------
+File: `utils/features.py`
+
+The model uses user baseline values from `user_profiles.db`:
+- `avg_amount`
+- `frequent_time`
+- `merchant`
+- `first_name`
+- `last_name`
+- `gender`
+- `age`
+
+Those values are used to normalize the transaction amount and time.
+If there is no baseline, the current transaction becomes the baseline for that card.
+
+The database is loaded from `user_profiles.db` in the repository root.
+To build it, an initialization script like `init_db.py` can be used. This step is required before using the API if the DB is missing.
+
+
+7. Frontend Interaction
+-----------------------
+File: `frontend/app.py`
+
+The Streamlit app provides three tabs:
+- Terminal: enter card number, amount, and time, then submit transaction
+- Mobile App: review and approve or reject pending transactions
+- History: view recent transaction history for a card
+
+Frontend uses backend endpoints:
+- `/validate/{cc_num}` to verify card and show user info
+- `/transaction` to send new transaction data
+- `/transaction/{tid}/resolve` to approve/reject
+- `/history/{cc_num}` to retrieve history
+
+Displayed outputs:
+- transaction status: `APPROVED` or `PENDING`
+- risk score
+- merchant
+- reason for review when pending
+- history records and today's spending
+
+
+8. Output Files and Results
+---------------------------
+Generated artifacts:
+- `backend/models/model.pkl`: trained Random Forest model
+- `user_profiles.db`: user baseline profile database
+- `transaction_feedback.db`: feedback records used for retraining
+- `transaction_history.db`: transaction logs
+- `data/user_transactions_report.csv`: report produced by `export_user_data.py`
+
+`export_user_data.py` reads the dataset and user profiles to create a CSV report with fields such as:
+- `avg_transaction`
+- `lowest_transaction`
+- `highest_transaction`
+- `risky_threshold`
+
+This report is separate from model training and is for user transaction analytics.
+
+
+9. Detailed Step-by-Step Workflow
+-------------------------------
+This section explains the full execution path from raw data to final transaction decision.
+
+Step 1: Load training data and labels
+- File: `backend/retrain.py`
+- Data source: `data/creditcard.csv`
+- Label column: `is_fraud`
+
+Relevant code:
+```python
+    d = pd.read_csv(dataPath)
+    ...
+    labels.append(r['is_fraud'])
+    X = np.array(f_list)
+    y = np.array(labels)
+```
+
+Step 2: Extract features for each transaction
+- File: `utils/features.py`
+
+Relevant code:
+```python
+    t_val = h + m / 60.0 + s / 3600.0
+    base = get_data(cc)
+    if not base:
+      avg_amt = amt
+      freq_t = t_val
+    else:
+      avg_amt = base['avg_amount']
+      freq_t = base['frequent_time']
+    t_raw = abs(t_val - freq_t)
+    t_diff = min(t_raw, 24 - t_raw)
+    t_dev = t_diff / 12.0
+    a_dev = abs(amt - avg_amt) / avg_amt if avg_amt > 0 else 0.0
+    a_log = math.log(amt + 1)
+    return [a_dev, t_dev, a_log, t_val]
+```
+
+Step 3: Train the Random Forest model
+- File: `backend/retrain.py`
+
+Relevant code:
+```python
+    m = RandomForestClassifier(
+        n_estimators=250,
+        max_depth=12,
+        min_samples_split=5,
+        min_samples_leaf=3,
+        random_state=42,
+        class_weight='balanced_subsample',
+        n_jobs=-1
+    )
+    m.fit(X, y)
+```
+
+Then the model is saved:
+```python
+    with open(modelPath, 'wb') as f:
+        pickle.dump(m, f)
+```
+
+Step 4: Load the model in the API
+- File: `backend/main.py`
+
+Relevant code:
+```python
+model_file = modelPath
+with open(model_file, 'rb') as f:
+    model = pickle.load(f)
+```
+
+Step 5: Validate card and get baseline
+- File: `backend/main.py`
+
+Relevant code:
+```python
+if not validateCreditCard(txn.cc_num):
+    raise HTTPException(status_code=400, detail="Card not in system")
+info = getUserBaseline(txn.cc_num)
+```
+
+`validateCreditCard` and `getUserBaseline` are aliases for `utils/features.py` functions.
+
+Step 6: Predict fraud probability and compute risk
+- File: `backend/main.py`
+
+Relevant code:
+```python
+feat = extractFeatures(txn.dict())
+fraud_prob = model.predict_proba([feat])[0][1]
+risk, reason = calc_risk(fraud_prob, txn.amt, info)
+```
+
+This is the exact flow where the model output becomes a risk score.
+
+Step 7: Apply threshold and decide
+- File: `backend/main.py`
+
+Relevant code:
+```python
+if risk < riskThreshold:
+    status = "APPROVED"
+else:
+    status = "PENDING"
+```
+
+`riskThreshold` is defined in `config.py`:
+```python
+riskThreshold = 80
+```
+
+Step 8: Approve, pending, or hold
+- File: `backend/main.py`
+
+If approved, the API returns:
+```python
+{
+  "status": "APPROVED",
+  "transaction_id": tid,
+  "risk_score": risk,
+  "merchant": merchant,
+  "time": fmtTime(txn.hour, txn.minute, txn.second)
+}
+```
+
+If pending, the API returns:
+```python
+{
+  "status": "PENDING",
+  "transaction_id": tid,
+  "risk_score": risk,
+  "reason": reason,
+  "merchant": merchant,
+  "time": fmtTime(txn.hour, txn.minute, txn.second)
+}
+```
+
+Step 9: Resolve pending transaction and update model
+- File: `backend/main.py`
+
+Relevant code:
+```python
+logFeedback(t['cc_num'], t['amt'], t['hour'], t['minute'], t['second'], act.action)
+logTransaction(...)
+background_tasks.add_task(retrainModel)
+background_tasks.add_task(reloadModelInBackground)
+```
+
+This means manual approval or rejection adds feedback and triggers retraining.
+
+Step 10: Retrain with feedback
+- File: `backend/retrain.py`
+
+Relevant code:
+```python
+for row in rows:
+    if row[5] == 'approve':
+        new_row = pd.DataFrame({
+            'cc_num': [row[0]],
+            'amt': [row[1]],
+            'hour': [row[2]],
+            'minute': [row[3]],
+            'second': [row[4]],
+            'is_fraud': [0]
+        })
+        d_normal = pd.concat([d_normal, new_row], ignore_index=True)
+```
+
+Here the system treats approved feedback as additional non-fraud training examples.
+
+
+10. Sample outputs and expected behavior
+---------------------------------------
+When a transaction is processed successfully, the API returns one of:
+- `APPROVED` with risk score below `riskThreshold`
+- `PENDING` with risk score at or above `riskThreshold`
+
+Example output for approval:
+```json
+{
+  "status": "APPROVED",
+  "transaction_id": "...",
+  "risk_score": 42,
+  "merchant": "fraud_ABC Corp",
+  "time": "12:14:25 PM"
+}
+```
+
+Example output for pending review:
+```json
+{
+  "status": "PENDING",
+  "transaction_id": "...",
+  "risk_score": 83,
+  "reason": "Amount 2x+ above average. Unusual transaction time.",
+  "merchant": "fraud_ABC Corp",
+  "time": "7:20:05 AM"
+}
+```
+
+If the user resolves pending transactions, the feedback path updates the model and stores the final status in `transaction_history.db`.
+
+
+11. How model improvement happens over time
+------------------------------------------
+- User feedback on pending transactions is stored in `transaction_feedback.db`
+- The next retraining run includes these approved cases as new non-fraud examples
+- The saved model file `backend/models/model.pkl` is replaced with the updated Random Forest
+- `backend/main.py` reloads the model in the background so future requests use the newest version
+
+Because of this, the system is not static: it adapts based on approval feedback.
+
+
+12. Key files and their roles
+-----------------------------
+- `config.py`: thresholds, model/data paths, score constants
+- `utils/features.py`: transaction feature generation and baseline lookup
+- `backend/retrain.py`: model training and retraining logic
+- `backend/main.py`: API, scoring, approval logic, threshold decision, feedback loop
+- `frontend/app.py`: Streamlit UI and transaction interaction
+- `export_user_data.py`: analytics report generation from dataset and profiles
+- `PROJECT_EXPLANATION.txt`: this report
+
+
+9. How the model improves over time
+-----------------------------------
+Retraining is triggered when pending transactions are resolved in `/transaction/{tid}/resolve`.
+The backend logs feedback to `transaction_feedback.db` and then runs `retrainModel()`.
+The retraining procedure:
+- reads original dataset
+- reads feedback-approved transactions
+- adds approved transactions as non-fraud examples (`is_fraud=0`)
+- retrains the Random Forest on the expanded data
+- saves the updated model
+- reloads the model in the running API
+
+This means the system can adapt when users approve suspicious transactions.
+
+
+10. Summary
+-----------
+The system works as follows:
+- raw transaction data and user profiles are stored in files and databases
+- features are extracted from amount and time relative to user history
+- Random Forest predicts fraud probability from those features
+- custom rule-based risk scoring adjusts probability using business thresholds
+- `riskThreshold` controls whether a transaction is approved or flagged
+- pending transactions can be reviewed and used to retrain the model
+- a Streamlit frontend provides UI for transaction entry, mobile approval, and history
+
+Each part of the code has a precise role:
+- `config.py`: thresholds and paths
+- `utils/features.py`: feature generation and baseline lookup
+- `backend/retrain.py`: model training and retraining
+- `backend/main.py`: scoring, thresholding, and API logic
+- `frontend/app.py`: user-facing interface
+- `export_user_data.py`: analytics report generation
+
+This document is meant to explain project flow clearly, with file paths and code behavior for the exact fraud scoring and decision process.
